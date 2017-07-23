@@ -1,0 +1,955 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="242" onload="init(evt)" viewBox="0 0 1200 242" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<defs >
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	.func_g:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	var details, searchbtn, matchedtxt, svg;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+	}
+
+	// mouse-over for info
+	function s(node) {		// show
+		info = g_to_text(node);
+		details.nodeValue = "Function: " + info;
+	}
+	function c() {			// clear
+		details.nodeValue = ' ';
+	}
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	})
+
+	// functions
+	function find_child(parent, name, attr) {
+		var children = parent.childNodes;
+		for (var i=0; i<children.length;i++) {
+			if (children[i].tagName == name)
+				return (attr != undefined) ? children[i].attributes[attr].value : children[i];
+		}
+		return;
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_"+attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_"+attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_"+attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes["width"].value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes["x"].value = parseFloat(r.attributes["x"].value) +3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2*12*0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x=txt.length-2; x>0; x--) {
+			if (t.getSubStringLength(0, x+2) <= w) {
+				t.textContent = txt.substring(0,x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes["x"] != undefined) {
+				orig_save(e, "x");
+				e.attributes["x"].value = (parseFloat(e.attributes["x"].value) - x - 10) * ratio + 10;
+				if(e.tagName == "text") e.attributes["x"].value = find_child(e.parentNode, "rect", "x") + 3;
+			}
+			if (e.attributes["width"] != undefined) {
+				orig_save(e, "width");
+				e.attributes["width"].value = parseFloat(e.attributes["width"].value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_child(c[i], x-10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes["x"] != undefined) {
+				orig_save(e, "x");
+				e.attributes["x"].value = 10;
+			}
+			if (e.attributes["width"] != undefined) {
+				orig_save(e, "width");
+				e.attributes["width"].value = parseInt(svg.width.baseVal.value) - (10*2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr["width"].value);
+		var xmin = parseFloat(attr["x"].value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr["y"].value);
+		var ratio = (svg.width.baseVal.value - 2*10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		var unzoombtn = document.getElementById("unzoom");
+		unzoombtn.style["opacity"] = "1.0";
+
+		var el = document.getElementsByTagName("g");
+		for(var i=0;i<el.length;i++){
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a["x"].value);
+			var ew = parseFloat(a["width"].value);
+			// Is it an ancestor
+			if (0 == 0) {
+				var upstack = parseFloat(a["y"].value) > ymin;
+			} else {
+				var upstack = parseFloat(a["y"].value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.style["opacity"] = "0.5";
+					zoom_parent(e);
+					e.onclick = function(e){unzoom(); zoom(this);};
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.style["display"] = "none";
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.style["display"] = "none";
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					e.onclick = function(e){zoom(this);};
+					update_text(e);
+				}
+			}
+		}
+	}
+	function unzoom() {
+		var unzoombtn = document.getElementById("unzoom");
+		unzoombtn.style["opacity"] = "0.0";
+
+		var el = document.getElementsByTagName("g");
+		for(i=0;i<el.length;i++) {
+			el[i].style["display"] = "block";
+			el[i].style["opacity"] = "1";
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+	}
+
+	// search
+	function reset_search() {
+		var el = document.getElementsByTagName("rect");
+		for (var i=0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)", "");
+			if (term != null) {
+				search(term)
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			searchbtn.style["opacity"] = "0.1";
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.style["opacity"] = "0.0";
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		var re = new RegExp(term);
+		var el = document.getElementsByTagName("g");
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			if (e.attributes["class"].value != "func_g")
+				continue;
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (rect == null) {
+				// the rect might be wrapped in an anchor
+				// if nameattr href is being used
+				if (rect = find_child(e, "a")) {
+				    rect = find_child(r, "rect");
+				}
+			}
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes["width"].value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes["x"].value);
+				orig_save(rect, "fill");
+				rect.attributes["fill"].value =
+				    "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.style["opacity"] = "1.0";
+		searchbtn.firstChild.nodeValue = "Reset Search"
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+				return a - b;
+			if (a < b || a > b)
+				return a - b;
+			return matches[b] - matches[a];
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.style["opacity"] = "1.0";
+		pct = 100 * count / maxwidth;
+		if (pct == 100)
+			pct = "100"
+		else
+			pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+	function searchover(e) {
+		searchbtn.style["opacity"] = "1.0";
+	}
+	function searchout(e) {
+		if (searching) {
+			searchbtn.style["opacity"] = "1.0";
+		} else {
+			searchbtn.style["opacity"] = "0.1";
+		}
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="242.0" fill="url(#background)"  />
+<text text-anchor="middle" x="600.00" y="24" font-size="17" font-family="Verdana" fill="rgb(0,0,0)"  >Flame Graph</text>
+<text text-anchor="" x="10.00" y="225" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="details" > </text>
+<text text-anchor="" x="10.00" y="24" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="unzoom" onclick="unzoom()" style="opacity:0.0;cursor:pointer" >Reset Zoom</text>
+<text text-anchor="" x="1090.00" y="24" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="search" onmouseover="searchover()" onmouseout="searchout()" onclick="search_prompt()" style="opacity:0.1;cursor:pointer" >Search</text>
+<text text-anchor="" x="1090.00" y="225" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="matched" > </text>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.javaclasspath.v0v2v2.clojure.java.classpath (38 samples, 0.43%)</title><rect x="874.0" y="145" width="5.0" height="15.0" fill="rgb(241,117,4)" rx="2" ry="2" />
+<text text-anchor="" x="876.99" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>clojure.tools.nrepl.misc (49 samples, 0.55%)</title><rect x="776.9" y="113" width="6.6" height="15.0" fill="rgb(240,54,50)" rx="2" ry="2" />
+<text text-anchor="" x="779.91" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>clojure.stacktrace (6 samples, 0.07%)</title><rect x="717.3" y="113" width="0.8" height="15.0" fill="rgb(254,165,48)" rx="2" ry="2" />
+<text text-anchor="" x="720.25" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.potemkin (83 samples, 0.94%)</title><rect x="1081.5" y="65" width="11.1" height="15.0" fill="rgb(223,15,12)" rx="2" ry="2" />
+<text text-anchor="" x="1084.54" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>dynapath.defaults (25 samples, 0.28%)</title><rect x="440.8" y="97" width="3.3" height="15.0" fill="rgb(219,5,10)" rx="2" ry="2" />
+<text text-anchor="" x="443.75" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.inlined_deps.compliment.v0v3v4.compliment.sources.ns_mappings (160 samples, 1.81%)</title><rect x="342.9" y="129" width="21.4" height="15.0" fill="rgb(252,127,45)" rx="2" ry="2" />
+<text text-anchor="" x="345.87" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >c..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.inlined_deps.toolsnamespace.v0v3v0_alpha3.clojure.tools.namespace.parse (715 samples, 8.10%)</title><rect x="66.3" y="81" width="95.5" height="15.0" fill="rgb(245,77,38)" rx="2" ry="2" />
+<text text-anchor="" x="69.31" y="91.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >cider.inlin..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl.middleware.classpath (17 samples, 0.19%)</title><rect x="285.3" y="161" width="2.3" height="15.0" fill="rgb(240,167,17)" rx="2" ry="2" />
+<text text-anchor="" x="288.25" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.zip.find (24 samples, 0.27%)</title><rect x="1158.9" y="113" width="3.3" height="15.0" fill="rgb(219,107,28)" rx="2" ry="2" />
+<text text-anchor="" x="1161.90" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.toolsreader.v1v0v0_beta4.clojure.tools.reader.reader_types (211 samples, 2.39%)</title><rect x="921.7" y="113" width="28.2" height="15.0" fill="rgb(250,89,25)" rx="2" ry="2" />
+<text text-anchor="" x="924.66" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >m..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>refactor_nrepl.config (21 samples, 0.24%)</title><rect x="799.3" y="161" width="2.8" height="15.0" fill="rgb(253,100,52)" rx="2" ry="2" />
+<text text-anchor="" x="802.33" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.inlined_deps.toolsreader.v1v0v0.clojure.tools.reader.impl.utils (85 samples, 0.96%)</title><rect x="150.5" y="33" width="11.3" height="15.0" fill="rgb(216,69,37)" rx="2" ry="2" />
+<text text-anchor="" x="153.48" y="43.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>clojure.set (12 samples, 0.14%)</title><rect x="738.9" y="113" width="1.6" height="15.0" fill="rgb(226,110,41)" rx="2" ry="2" />
+<text text-anchor="" x="741.87" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>clojure.tools.nrepl.middleware (154 samples, 1.74%)</title><rect x="666.6" y="145" width="20.5" height="15.0" fill="rgb(235,125,10)" rx="2" ry="2" />
+<text text-anchor="" x="669.56" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>clojure.reflect (57 samples, 0.65%)</title><rect x="432.0" y="113" width="7.6" height="15.0" fill="rgb(250,88,27)" rx="2" ry="2" />
+<text text-anchor="" x="434.96" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>clojure.template (20 samples, 0.23%)</title><rect x="718.1" y="113" width="2.7" height="15.0" fill="rgb(215,182,19)" rx="2" ry="2" />
+<text text-anchor="" x="721.10" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl.middleware.stacktrace (1,200 samples, 13.59%)</title><rect x="40.3" y="129" width="160.3" height="15.0" fill="rgb(248,175,9)" rx="2" ry="2" />
+<text text-anchor="" x="43.28" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >cider.nrepl.middlewa..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.toolsnamespace.v0v3v0_alpha3.clojure.tools.namespace.parse (531 samples, 6.01%)</title><rect x="879.0" y="145" width="70.9" height="15.0" fill="rgb(231,218,32)" rx="2" ry="2" />
+<text text-anchor="" x="882.00" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >mranders..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.toolsreader.v1v0v0_beta4.clojure.tools.reader (512 samples, 5.80%)</title><rect x="881.5" y="129" width="68.4" height="15.0" fill="rgb(213,132,22)" rx="2" ry="2" />
+<text text-anchor="" x="884.50" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >mrander..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.node.forms (33 samples, 0.37%)</title><rect x="997.0" y="65" width="4.4" height="15.0" fill="rgb(225,205,46)" rx="2" ry="2" />
+<text text-anchor="" x="1000.02" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>eflect.java (57 samples, 0.65%)</title><rect x="432.0" y="97" width="7.6" height="15.0" fill="rgb(254,91,20)" rx="2" ry="2" />
+<text text-anchor="" x="434.96" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>print.column_writer (6 samples, 0.07%)</title><rect x="638.3" y="129" width="0.8" height="15.0" fill="rgb(248,19,34)" rx="2" ry="2" />
+<text text-anchor="" x="641.26" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.node.protocols (79 samples, 0.89%)</title><rect x="986.5" y="49" width="10.5" height="15.0" fill="rgb(207,119,7)" rx="2" ry="2" />
+<text text-anchor="" x="989.47" y="59.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl.middleware.util.misc (78 samples, 0.88%)</title><rect x="187.9" y="97" width="10.4" height="15.0" fill="rgb(252,167,2)" rx="2" ry="2" />
+<text text-anchor="" x="190.89" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl.middleware.inspect (254 samples, 2.88%)</title><rect x="454.5" y="145" width="33.9" height="15.0" fill="rgb(218,185,45)" rx="2" ry="2" />
+<text text-anchor="" x="457.45" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >ci..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.inlined_deps.cljs_tooling.v0v2v0.cljs_tooling.util.misc (19 samples, 0.22%)</title><rect x="306.8" y="113" width="2.6" height="15.0" fill="rgb(221,100,40)" rx="2" ry="2" />
+<text text-anchor="" x="309.85" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.fs.v1v4v6.me.raynes.fs (479 samples, 5.42%)</title><rect x="810.0" y="145" width="64.0" height="15.0" fill="rgb(218,137,48)" rx="2" ry="2" />
+<text text-anchor="" x="813.05" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >mrander..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.zip.insert (17 samples, 0.19%)</title><rect x="1162.2" y="113" width="2.3" height="15.0" fill="rgb(228,181,27)" rx="2" ry="2" />
+<text text-anchor="" x="1165.17" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>clojure.repl (17 samples, 0.19%)</title><rect x="198.3" y="113" width="2.3" height="15.0" fill="rgb(223,154,43)" rx="2" ry="2" />
+<text text-anchor="" x="201.34" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>print.pprint_base (13 samples, 0.15%)</title><rect x="644.6" y="129" width="1.7" height="15.0" fill="rgb(228,62,34)" rx="2" ry="2" />
+<text text-anchor="" x="647.65" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>clojure.java.javadoc (41 samples, 0.46%)</title><rect x="448.9" y="129" width="5.6" height="15.0" fill="rgb(205,192,0)" rx="2" ry="2" />
+<text text-anchor="" x="451.92" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.inlined_deps.compliment.v0v3v4.compliment.utils (86 samples, 0.97%)</title><rect x="352.8" y="113" width="11.5" height="15.0" fill="rgb(251,149,34)" rx="2" ry="2" />
+<text text-anchor="" x="355.76" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl.print_method (36 samples, 0.41%)</title><rect x="614.5" y="161" width="4.8" height="15.0" fill="rgb(230,84,9)" rx="2" ry="2" />
+<text text-anchor="" x="617.53" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>refactor_nrepl.middleware (3,031 samples, 34.32%)</title><rect x="785.0" y="177" width="405.0" height="15.0" fill="rgb(243,56,24)" rx="2" ry="2" />
+<text text-anchor="" x="787.99" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >refactor_nrepl.middleware</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.parser.whitespace (13 samples, 0.15%)</title><rect x="1109.4" y="97" width="1.8" height="15.0" fill="rgb(249,99,7)" rx="2" ry="2" />
+<text text-anchor="" x="1112.43" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>clojure.pprint (169 samples, 1.91%)</title><rect x="629.6" y="145" width="22.6" height="15.0" fill="rgb(231,108,15)" rx="2" ry="2" />
+<text text-anchor="" x="632.59" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >c..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>clojure.tools.nrepl.middleware.pr_values (33 samples, 0.37%)</title><rect x="696.5" y="129" width="4.5" height="15.0" fill="rgb(233,50,54)" rx="2" ry="2" />
+<text text-anchor="" x="699.51" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.node.seq (47 samples, 0.53%)</title><rect x="1045.6" y="65" width="6.3" height="15.0" fill="rgb(248,116,17)" rx="2" ry="2" />
+<text text-anchor="" x="1048.65" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.node.token (34 samples, 0.38%)</title><rect x="1072.7" y="65" width="4.4" height="15.0" fill="rgb(229,10,17)" rx="2" ry="2" />
+<text text-anchor="" x="1075.66" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.node.quote (40 samples, 0.45%)</title><rect x="1028.1" y="65" width="5.5" height="15.0" fill="rgb(224,27,32)" rx="2" ry="2" />
+<text text-anchor="" x="1031.15" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.reader (42 samples, 0.48%)</title><rect x="1111.2" y="97" width="5.6" height="15.0" fill="rgb(240,205,2)" rx="2" ry="2" />
+<text text-anchor="" x="1114.22" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl.middleware.util.inspect (208 samples, 2.36%)</title><rect x="460.5" y="129" width="27.9" height="15.0" fill="rgb(237,188,15)" rx="2" ry="2" />
+<text text-anchor="" x="463.53" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >c..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.inlined_deps.cljs_tooling.v0v2v0.cljs_tooling.util.analysis (53 samples, 0.60%)</title><rect x="302.3" y="129" width="7.1" height="15.0" fill="rgb(236,11,19)" rx="2" ry="2" />
+<text text-anchor="" x="305.29" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl.middleware.undef (17 samples, 0.19%)</title><rect x="608.8" y="161" width="2.3" height="15.0" fill="rgb(240,137,19)" rx="2" ry="2" />
+<text text-anchor="" x="611.83" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl (5,801 samples, 65.68%)</title><rect x="10.0" y="177" width="775.0" height="15.0" fill="rgb(217,201,21)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >cider.nrepl</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.node.whitespace (95 samples, 1.08%)</title><rect x="1015.4" y="49" width="12.7" height="15.0" fill="rgb(253,198,3)" rx="2" ry="2" />
+<text text-anchor="" x="1018.41" y="59.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.inlined_deps.toolsreader.v1v0v0.clojure.tools.reader.default_data_readers (127 samples, 1.44%)</title><rect x="101.1" y="49" width="17.1" height="15.0" fill="rgb(239,144,5)" rx="2" ry="2" />
+<text text-anchor="" x="104.13" y="59.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl.middleware.util.java.parser (192 samples, 2.17%)</title><rect x="406.2" y="113" width="25.8" height="15.0" fill="rgb(251,143,1)" rx="2" ry="2" />
+<text text-anchor="" x="409.24" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >c..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>refactor_nrepl.ns.libspecs (69 samples, 0.78%)</title><rect x="1177.6" y="161" width="9.2" height="15.0" fill="rgb(231,106,18)" rx="2" ry="2" />
+<text text-anchor="" x="1180.61" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl.middleware.track_state (128 samples, 1.45%)</title><rect x="591.7" y="161" width="17.1" height="15.0" fill="rgb(248,88,36)" rx="2" ry="2" />
+<text text-anchor="" x="594.69" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.zip.utils (30 samples, 0.34%)</title><rect x="1155.0" y="81" width="3.9" height="15.0" fill="rgb(253,170,50)" rx="2" ry="2" />
+<text text-anchor="" x="1157.95" y="91.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>refactor_nrepl.s_expressions (1,686 samples, 19.09%)</title><rect x="949.9" y="145" width="225.3" height="15.0" fill="rgb(208,166,24)" rx="2" ry="2" />
+<text text-anchor="" x="952.92" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >refactor_nrepl.s_expressions</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.node.meta (126 samples, 1.43%)</title><rect x="1011.3" y="65" width="16.8" height="15.0" fill="rgb(238,125,49)" rx="2" ry="2" />
+<text text-anchor="" x="1014.31" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.inlined_deps.compliment.v0v3v4.compliment.sources (40 samples, 0.45%)</title><rect x="347.4" y="113" width="5.4" height="15.0" fill="rgb(240,227,19)" rx="2" ry="2" />
+<text text-anchor="" x="350.37" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.node.keyword (37 samples, 0.42%)</title><rect x="1006.4" y="65" width="4.9" height="15.0" fill="rgb(212,161,33)" rx="2" ry="2" />
+<text text-anchor="" x="1009.41" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl.middleware.util.namespace (540 samples, 6.11%)</title><rect x="209.5" y="129" width="72.2" height="15.0" fill="rgb(228,197,24)" rx="2" ry="2" />
+<text text-anchor="" x="212.54" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >cider.nr..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl.middleware.complete (607 samples, 6.87%)</title><rect x="287.6" y="161" width="81.0" height="15.0" fill="rgb(242,16,40)" rx="2" ry="2" />
+<text text-anchor="" x="290.58" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >cider.nre..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.inlined_deps.javaclasspath.v0v2v3.clojure.java.classpath (63 samples, 0.71%)</title><rect x="55.2" y="97" width="8.5" height="15.0" fill="rgb(236,211,39)" rx="2" ry="2" />
+<text text-anchor="" x="58.25" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>clojure.test (49 samples, 0.55%)</title><rect x="714.2" y="129" width="6.6" height="15.0" fill="rgb(221,95,14)" rx="2" ry="2" />
+<text text-anchor="" x="717.20" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl.middleware.debug (958 samples, 10.85%)</title><rect x="368.6" y="161" width="128.0" height="15.0" fill="rgb(248,125,51)" rx="2" ry="2" />
+<text text-anchor="" x="371.65" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >cider.nrepl.midd..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>refactor_nrepl.ns.ns_parser (46 samples, 0.52%)</title><rect x="1180.6" y="145" width="6.2" height="15.0" fill="rgb(229,52,15)" rx="2" ry="2" />
+<text text-anchor="" x="1183.62" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.parser.utils (34 samples, 0.38%)</title><rect x="1099.9" y="81" width="4.5" height="15.0" fill="rgb(253,53,40)" rx="2" ry="2" />
+<text text-anchor="" x="1102.85" y="91.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl.middleware.format (125 samples, 1.42%)</title><rect x="504.5" y="161" width="16.6" height="15.0" fill="rgb(221,35,41)" rx="2" ry="2" />
+<text text-anchor="" x="507.46" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>clojure.tools.nrepl.middleware.session (115 samples, 1.30%)</title><rect x="705.4" y="145" width="15.4" height="15.0" fill="rgb(208,221,18)" rx="2" ry="2" />
+<text text-anchor="" x="708.36" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.zip.seq (33 samples, 0.37%)</title><rect x="1164.5" y="113" width="4.4" height="15.0" fill="rgb(232,156,10)" rx="2" ry="2" />
+<text text-anchor="" x="1167.50" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>dynapath.util (70 samples, 0.79%)</title><rect x="439.6" y="113" width="9.3" height="15.0" fill="rgb(224,45,45)" rx="2" ry="2" />
+<text text-anchor="" x="442.56" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.zip.base (66 samples, 0.75%)</title><rect x="1138.5" y="113" width="8.8" height="15.0" fill="rgb(240,105,22)" rx="2" ry="2" />
+<text text-anchor="" x="1141.51" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl.middleware.test (73 samples, 0.83%)</title><rect x="562.7" y="161" width="9.7" height="15.0" fill="rgb(218,82,53)" rx="2" ry="2" />
+<text text-anchor="" x="565.68" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.inlined_deps.toolsnamespace.v0v3v0_alpha3.clojure.tools.namespace.file (834 samples, 9.44%)</title><rect x="63.7" y="97" width="111.4" height="15.0" fill="rgb(233,168,48)" rx="2" ry="2" />
+<text text-anchor="" x="66.66" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >cider.inlined..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.node (1,024 samples, 11.59%)</title><rect x="962.3" y="97" width="136.9" height="15.0" fill="rgb(247,87,11)" rx="2" ry="2" />
+<text text-anchor="" x="965.32" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >mranderson047.rew..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.zip (437 samples, 4.95%)</title><rect x="1116.8" y="129" width="58.4" height="15.0" fill="rgb(227,182,26)" rx="2" ry="2" />
+<text text-anchor="" x="1119.85" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >mrande..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl.middleware.util.error_handling (1,342 samples, 15.19%)</title><rect x="21.3" y="145" width="179.3" height="15.0" fill="rgb(212,5,3)" rx="2" ry="2" />
+<text text-anchor="" x="24.27" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >cider.nrepl.middleware...</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>print.print_table (2 samples, 0.02%)</title><rect x="650.1" y="129" width="0.2" height="15.0" fill="rgb(234,108,2)" rx="2" ry="2" />
+<text text-anchor="" x="653.09" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>clojure.tools.nrepl.middleware.load_file (33 samples, 0.37%)</title><rect x="701.0" y="145" width="4.4" height="15.0" fill="rgb(205,108,4)" rx="2" ry="2" />
+<text text-anchor="" x="703.98" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.node.comment (108 samples, 1.22%)</title><rect x="982.6" y="65" width="14.4" height="15.0" fill="rgb(249,152,30)" rx="2" ry="2" />
+<text text-anchor="" x="985.55" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl.middleware.info (515 samples, 5.83%)</title><rect x="385.7" y="145" width="68.8" height="15.0" fill="rgb(207,76,52)" rx="2" ry="2" />
+<text text-anchor="" x="388.68" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >cider.n..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl.middleware.resource (21 samples, 0.24%)</title><rect x="555.3" y="161" width="2.8" height="15.0" fill="rgb(229,226,47)" rx="2" ry="2" />
+<text text-anchor="" x="558.32" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.zip.edit (87 samples, 0.99%)</title><rect x="1147.3" y="113" width="11.6" height="15.0" fill="rgb(217,70,34)" rx="2" ry="2" />
+<text text-anchor="" x="1150.29" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.inlined_deps.toolsreader.v1v0v0.clojure.tools.reader.reader_types (270 samples, 3.06%)</title><rect x="125.7" y="49" width="36.1" height="15.0" fill="rgb(235,31,38)" rx="2" ry="2" />
+<text text-anchor="" x="128.71" y="59.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >cid..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.inlined_deps.toolstrace.v0v7v9.clojure.tools.trace (131 samples, 1.48%)</title><rect x="574.2" y="145" width="17.5" height="15.0" fill="rgb(242,66,5)" rx="2" ry="2" />
+<text text-anchor="" x="577.17" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>print.utilities (14 samples, 0.16%)</title><rect x="650.3" y="129" width="1.9" height="15.0" fill="rgb(234,0,52)" rx="2" ry="2" />
+<text text-anchor="" x="653.33" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.node.string (156 samples, 1.77%)</title><rect x="1051.9" y="65" width="20.8" height="15.0" fill="rgb(214,136,12)" rx="2" ry="2" />
+<text text-anchor="" x="1054.86" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.inlined_deps.compliment.v0v3v4.compliment.sources.keywords (37 samples, 0.42%)</title><rect x="313.3" y="129" width="5.0" height="15.0" fill="rgb(235,10,39)" rx="2" ry="2" />
+<text text-anchor="" x="316.30" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl.middleware.util.cljs (67 samples, 0.76%)</title><rect x="179.0" y="97" width="8.9" height="15.0" fill="rgb(225,37,32)" rx="2" ry="2" />
+<text text-anchor="" x="181.98" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.node.reader_macro (91 samples, 1.03%)</title><rect x="1033.6" y="65" width="12.0" height="15.0" fill="rgb(213,111,18)" rx="2" ry="2" />
+<text text-anchor="" x="1036.55" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.inlined_deps.compliment.v0v3v4.compliment.sources.special_forms (19 samples, 0.22%)</title><rect x="366.2" y="129" width="2.4" height="15.0" fill="rgb(219,195,11)" rx="2" ry="2" />
+<text text-anchor="" x="369.16" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.inlined_deps.toolsnamespace.v0v3v0_alpha3.clojure.tools.namespace.dependency (82 samples, 0.93%)</title><rect x="164.1" y="65" width="11.0" height="15.0" fill="rgb(208,98,20)" rx="2" ry="2" />
+<text text-anchor="" x="167.08" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.toolsreader.v1v0v0_beta4.clojure.tools.reader.default_data_readers (80 samples, 0.91%)</title><rect x="906.1" y="113" width="10.7" height="15.0" fill="rgb(238,115,17)" rx="2" ry="2" />
+<text text-anchor="" x="909.10" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.inlined_deps.toolsnamespace.v0v3v0_alpha3.clojure.tools.namespace.find (929 samples, 10.52%)</title><rect x="50.9" y="113" width="124.2" height="15.0" fill="rgb(240,102,22)" rx="2" ry="2" />
+<text text-anchor="" x="53.93" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >cider.inlined_d..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.inlined_deps.compliment.v0v3v4.compliment.sources.namespaces_and_classes (166 samples, 1.88%)</title><rect x="320.7" y="129" width="22.2" height="15.0" fill="rgb(222,78,4)" rx="2" ry="2" />
+<text text-anchor="" x="323.65" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >c..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl.middleware.refresh (90 samples, 1.02%)</title><rect x="543.2" y="161" width="12.1" height="15.0" fill="rgb(222,23,14)" rx="2" ry="2" />
+<text text-anchor="" x="546.24" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.inlined_deps.compliment.v0v3v4.compliment.sources.local_bindings (18 samples, 0.20%)</title><rect x="318.3" y="129" width="2.4" height="15.0" fill="rgb(252,70,52)" rx="2" ry="2" />
+<text text-anchor="" x="321.27" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.parser.string (19 samples, 0.22%)</title><rect x="1104.4" y="97" width="2.5" height="15.0" fill="rgb(251,220,39)" rx="2" ry="2" />
+<text text-anchor="" x="1107.36" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl.middleware.macroexpand (66 samples, 0.75%)</title><rect x="521.1" y="161" width="8.8" height="15.0" fill="rgb(246,59,53)" rx="2" ry="2" />
+<text text-anchor="" x="524.09" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.node.integer (37 samples, 0.42%)</title><rect x="1001.4" y="65" width="5.0" height="15.0" fill="rgb(232,74,4)" rx="2" ry="2" />
+<text text-anchor="" x="1004.42" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>print.pretty_writer (28 samples, 0.32%)</title><rect x="646.3" y="129" width="3.8" height="15.0" fill="rgb(253,58,5)" rx="2" ry="2" />
+<text text-anchor="" x="649.32" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl.middleware.version (26 samples, 0.29%)</title><rect x="611.1" y="161" width="3.4" height="15.0" fill="rgb(246,169,41)" rx="2" ry="2" />
+<text text-anchor="" x="614.08" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>refactor_nrepl.util (18 samples, 0.20%)</title><rect x="1175.2" y="145" width="2.4" height="15.0" fill="rgb(253,54,19)" rx="2" ry="2" />
+<text text-anchor="" x="1178.20" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.inlined_deps.compliment.v0v3v4.compliment.sources.class_members (111 samples, 1.26%)</title><rect x="328.1" y="113" width="14.8" height="15.0" fill="rgb(254,93,9)" rx="2" ry="2" />
+<text text-anchor="" x="331.08" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.parser.keyword (39 samples, 0.44%)</title><rect x="1099.2" y="97" width="5.2" height="15.0" fill="rgb(210,139,42)" rx="2" ry="2" />
+<text text-anchor="" x="1102.17" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>clojure.walk (11 samples, 0.12%)</title><rect x="783.5" y="113" width="1.5" height="15.0" fill="rgb(234,87,19)" rx="2" ry="2" />
+<text text-anchor="" x="786.49" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.zip.move (34 samples, 0.38%)</title><rect x="1149.5" y="97" width="4.5" height="15.0" fill="rgb(210,155,10)" rx="2" ry="2" />
+<text text-anchor="" x="1152.54" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.inlined_deps.toolsnamespace.v0v3v0_alpha3.clojure.tools.namespace.dir (33 samples, 0.37%)</title><rect x="548.8" y="145" width="4.4" height="15.0" fill="rgb(215,153,22)" rx="2" ry="2" />
+<text text-anchor="" x="551.84" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.parser (1,229 samples, 13.92%)</title><rect x="952.6" y="129" width="164.2" height="15.0" fill="rgb(242,62,9)" rx="2" ry="2" />
+<text text-anchor="" x="955.63" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >mranderson047.rewrite..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>print.cl_format (65 samples, 0.74%)</title><rect x="629.6" y="129" width="8.7" height="15.0" fill="rgb(240,71,3)" rx="2" ry="2" />
+<text text-anchor="" x="632.59" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.toolsreader.v1v0v0_beta4.clojure.tools.reader.impl.utils (58 samples, 0.66%)</title><rect x="942.2" y="97" width="7.7" height="15.0" fill="rgb(235,10,16)" rx="2" ry="2" />
+<text text-anchor="" x="945.18" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>clojure.java.browse (38 samples, 0.43%)</title><rect x="449.4" y="113" width="5.1" height="15.0" fill="rgb(219,21,8)" rx="2" ry="2" />
+<text text-anchor="" x="452.44" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>all (8,832 samples, 100%)</title><rect x="10.0" y="193" width="1180.0" height="15.0" fill="rgb(252,97,47)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.zip.remove (36 samples, 0.41%)</title><rect x="1154.0" y="97" width="4.9" height="15.0" fill="rgb(224,111,18)" rx="2" ry="2" />
+<text text-anchor="" x="1157.05" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.inlined_deps.cljs_tooling.v0v2v0.cljs_tooling.complete (149 samples, 1.69%)</title><rect x="289.5" y="145" width="19.9" height="15.0" fill="rgb(235,126,34)" rx="2" ry="2" />
+<text text-anchor="" x="292.55" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.node.fn (49 samples, 0.55%)</title><rect x="1092.6" y="81" width="6.6" height="15.0" fill="rgb(230,100,14)" rx="2" ry="2" />
+<text text-anchor="" x="1095.63" y="91.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.inlined_deps.toolsreader.v1v0v0.clojure.tools.reader.impl.commons (57 samples, 0.65%)</title><rect x="118.2" y="49" width="7.5" height="15.0" fill="rgb(244,114,7)" rx="2" ry="2" />
+<text text-anchor="" x="121.16" y="59.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl.middleware.util.instrument (62 samples, 0.70%)</title><rect x="488.4" y="145" width="8.2" height="15.0" fill="rgb(227,88,30)" rx="2" ry="2" />
+<text text-anchor="" x="491.38" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>clojure.tools.nrepl (83 samples, 0.94%)</title><rect x="652.2" y="145" width="11.0" height="15.0" fill="rgb(231,35,37)" rx="2" ry="2" />
+<text text-anchor="" x="655.21" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.inlined_deps.compliment.v0v3v4.compliment.sources.resources (14 samples, 0.16%)</title><rect x="364.3" y="129" width="1.9" height="15.0" fill="rgb(227,7,31)" rx="2" ry="2" />
+<text text-anchor="" x="367.25" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl.version (16 samples, 0.18%)</title><rect x="612.3" y="145" width="2.2" height="15.0" fill="rgb(229,166,26)" rx="2" ry="2" />
+<text text-anchor="" x="615.33" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.toolsreader.v1v0v0_beta4.clojure.tools.reader.impl.commons (36 samples, 0.41%)</title><rect x="916.8" y="113" width="4.9" height="15.0" fill="rgb(226,80,42)" rx="2" ry="2" />
+<text text-anchor="" x="919.81" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>clojure.zip (32 samples, 0.36%)</title><rect x="869.7" y="129" width="4.3" height="15.0" fill="rgb(207,225,23)" rx="2" ry="2" />
+<text text-anchor="" x="872.74" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>clojure.java.shell (34 samples, 0.38%)</title><rect x="449.9" y="97" width="4.6" height="15.0" fill="rgb(230,3,18)" rx="2" ry="2" />
+<text text-anchor="" x="452.95" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl.middleware.util.spec (27 samples, 0.31%)</title><rect x="281.7" y="129" width="3.6" height="15.0" fill="rgb(209,145,47)" rx="2" ry="2" />
+<text text-anchor="" x="284.69" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.zip.subedit (31 samples, 0.35%)</title><rect x="1168.9" y="113" width="4.1" height="15.0" fill="rgb(214,182,48)" rx="2" ry="2" />
+<text text-anchor="" x="1171.89" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl.middleware.pprint (174 samples, 1.97%)</title><rect x="175.1" y="113" width="23.2" height="15.0" fill="rgb(245,208,40)" rx="2" ry="2" />
+<text text-anchor="" x="178.09" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >c..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl.middleware.ns (43 samples, 0.49%)</title><rect x="529.9" y="161" width="5.8" height="15.0" fill="rgb(244,45,15)" rx="2" ry="2" />
+<text text-anchor="" x="532.92" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.inlined_deps.cljs_tooling.v0v2v0.cljs_tooling.info (29 samples, 0.33%)</title><rect x="298.4" y="129" width="3.9" height="15.0" fill="rgb(210,126,27)" rx="2" ry="2" />
+<text text-anchor="" x="301.39" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.zip.walk (16 samples, 0.18%)</title><rect x="1173.0" y="113" width="2.2" height="15.0" fill="rgb(242,28,0)" rx="2" ry="2" />
+<text text-anchor="" x="1176.02" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.node.coerce (871 samples, 9.86%)</title><rect x="976.2" y="81" width="116.4" height="15.0" fill="rgb(243,149,24)" rx="2" ry="2" />
+<text text-anchor="" x="979.22" y="91.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >mranderson047...</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>refactor_nrepl.stubs_for_interface (24 samples, 0.27%)</title><rect x="1186.8" y="161" width="3.2" height="15.0" fill="rgb(254,93,44)" rx="2" ry="2" />
+<text text-anchor="" x="1189.77" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>clojure.tools.nrepl.transport (481 samples, 5.45%)</title><rect x="720.8" y="129" width="64.2" height="15.0" fill="rgb(251,89,9)" rx="2" ry="2" />
+<text text-anchor="" x="723.78" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >clojure..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.parser.core (1,219 samples, 13.80%)</title><rect x="954.0" y="113" width="162.8" height="15.0" fill="rgb(213,65,9)" rx="2" ry="2" />
+<text text-anchor="" x="957.02" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >mranderson047.rewrit..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl.middleware.util.meta (634 samples, 7.18%)</title><rect x="200.6" y="145" width="84.7" height="15.0" fill="rgb(215,49,5)" rx="2" ry="2" />
+<text text-anchor="" x="203.59" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >cider.nre..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>clojure.tools.nrepl.server (1,240 samples, 14.04%)</title><rect x="619.3" y="161" width="165.7" height="15.0" fill="rgb(237,165,38)" rx="2" ry="2" />
+<text text-anchor="" x="622.28" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >clojure.tools.nrepl.s..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>clojure.tools.nrepl (481 samples, 5.45%)</title><rect x="720.8" y="145" width="64.2" height="15.0" fill="rgb(251,79,35)" rx="2" ry="2" />
+<text text-anchor="" x="723.78" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >clojure..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl.middleware.out (57 samples, 0.65%)</title><rect x="535.7" y="161" width="7.5" height="15.0" fill="rgb(247,199,49)" rx="2" ry="2" />
+<text text-anchor="" x="538.66" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.inlined_deps.compliment.v0v3v4.compliment.core (443 samples, 5.02%)</title><rect x="309.4" y="145" width="59.2" height="15.0" fill="rgb(239,105,24)" rx="2" ry="2" />
+<text text-anchor="" x="312.42" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >cider...</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>refactor_nrepl.core (2,811 samples, 31.83%)</title><rect x="802.1" y="161" width="375.5" height="15.0" fill="rgb(224,8,38)" rx="2" ry="2" />
+<text text-anchor="" x="805.08" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >refactor_nrepl.core</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl.middleware.apropos (1,999 samples, 22.63%)</title><rect x="18.2" y="161" width="267.1" height="15.0" fill="rgb(245,43,37)" rx="2" ry="2" />
+<text text-anchor="" x="21.22" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >cider.nrepl.middleware.apropos</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.parser.token (19 samples, 0.22%)</title><rect x="1106.9" y="97" width="2.5" height="15.0" fill="rgb(217,150,30)" rx="2" ry="2" />
+<text text-anchor="" x="1109.93" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl.middleware.trace (144 samples, 1.63%)</title><rect x="572.4" y="161" width="19.3" height="15.0" fill="rgb(228,214,7)" rx="2" ry="2" />
+<text text-anchor="" x="575.43" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.node.uneval (33 samples, 0.37%)</title><rect x="1077.1" y="65" width="4.4" height="15.0" fill="rgb(235,216,23)" rx="2" ry="2" />
+<text text-anchor="" x="1080.14" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>dynapath.dynamic_classpath (36 samples, 0.41%)</title><rect x="444.1" y="97" width="4.8" height="15.0" fill="rgb(239,55,38)" rx="2" ry="2" />
+<text text-anchor="" x="447.14" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.inlined_deps.toolsreader.v1v0v0.clojure.tools.reader.edn (108 samples, 1.22%)</title><rect x="506.6" y="145" width="14.5" height="15.0" fill="rgb(234,78,35)" rx="2" ry="2" />
+<text text-anchor="" x="509.62" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.rewrite_clj.v0v4v13_20150917v134033_1.rewrite_clj.zip.whitespace (42 samples, 0.48%)</title><rect x="1141.6" y="97" width="5.7" height="15.0" fill="rgb(233,132,44)" rx="2" ry="2" />
+<text text-anchor="" x="1144.63" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.inlined_deps.toolsreader.v1v0v0.clojure.tools.reader (698 samples, 7.90%)</title><rect x="68.7" y="65" width="93.1" height="15.0" fill="rgb(236,80,43)" rx="2" ry="2" />
+<text text-anchor="" x="71.66" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >cider.inlin..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>print.dispatch (42 samples, 0.48%)</title><rect x="639.1" y="129" width="5.5" height="15.0" fill="rgb(229,99,6)" rx="2" ry="2" />
+<text text-anchor="" x="642.07" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>clojure.tools.nrepl.ack (25 samples, 0.28%)</title><rect x="663.2" y="145" width="3.4" height="15.0" fill="rgb(219,51,43)" rx="2" ry="2" />
+<text text-anchor="" x="666.24" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mranderson047.toolsreader.v1v0v0_beta4.clojure.tools.reader.edn (130 samples, 1.47%)</title><rect x="1055.3" y="49" width="17.4" height="15.0" fill="rgb(214,169,27)" rx="2" ry="2" />
+<text text-anchor="" x="1058.29" y="59.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.inlined_deps.compliment.v0v3v4.compliment.context (14 samples, 0.16%)</title><rect x="311.5" y="129" width="1.8" height="15.0" fill="rgb(237,155,38)" rx="2" ry="2" />
+<text text-anchor="" x="314.46" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl.middleware.util.java (367 samples, 4.16%)</title><rect x="399.9" y="129" width="49.0" height="15.0" fill="rgb(245,25,47)" rx="2" ry="2" />
+<text text-anchor="" x="402.89" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >cide..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>clojure.tools.nrepl.middleware.interruptible_eval (104 samples, 1.18%)</title><rect x="687.1" y="145" width="13.9" height="15.0" fill="rgb(229,201,12)" rx="2" ry="2" />
+<text text-anchor="" x="690.14" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl.middleware.enlighten (58 samples, 0.66%)</title><rect x="496.6" y="161" width="7.9" height="15.0" fill="rgb(244,93,37)" rx="2" ry="2" />
+<text text-anchor="" x="499.65" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.nrepl.middleware.spec (34 samples, 0.38%)</title><rect x="558.1" y="161" width="4.6" height="15.0" fill="rgb(232,23,42)" rx="2" ry="2" />
+<text text-anchor="" x="561.13" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.inlined_deps.toolsnamespace.v0v3v0_alpha3.clojure.tools.namespace.track (99 samples, 1.12%)</title><rect x="161.8" y="81" width="13.3" height="15.0" fill="rgb(233,99,46)" rx="2" ry="2" />
+<text text-anchor="" x="164.85" y="91.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cider.inlined_deps.toolsnamespace.v0v3v0_alpha3.clojure.tools.namespace.reload (16 samples, 0.18%)</title><rect x="553.2" y="145" width="2.1" height="15.0" fill="rgb(242,92,2)" rx="2" ry="2" />
+<text text-anchor="" x="556.24" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>clojure.tools.nrepl.bencode (272 samples, 3.08%)</title><rect x="740.5" y="113" width="36.4" height="15.0" fill="rgb(233,180,44)" rx="2" ry="2" />
+<text text-anchor="" x="743.54" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >clo..</text>
+</g>
+</svg>
